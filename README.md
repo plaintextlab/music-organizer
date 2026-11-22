@@ -9,17 +9,26 @@ Tanha Dil [Songs.PK].mp3      →   Tanha Dil (2006) - Shaan.mp3
 Tum_Hi_Ho-(Mr-Jatt.com).m4a   →   Tum Hi Ho (2013) - Arijit Singh.m4a
 ```
 
-## Install
+## Run it
+
+Nothing to install by hand: just run the launcher.
 
 ```bash
-git clone <this repo> && cd music-organizer
-python3 -m venv .venv && .venv/bin/pip install -e .
-.venv/bin/music-organizer ~/Music
+./run.sh            # opens the app, pick a folder with  o
+./run.sh ~/Music    # or open a folder directly
 ```
 
-or with pipx: `pipx install .` then `music-organizer ~/Music`.
+The first run creates a private Python environment in `.venv/` inside this
+folder and installs what it needs (takes a few seconds, only once). It doesn't
+install anything system-wide. Later runs start instantly. To run it from
+anywhere, symlink it onto your PATH:
 
-Needs Python 3.10+. Supports **mp3, m4a, flac, ogg, opus** (subfolders included).
+```bash
+ln -s "$PWD/run.sh" ~/.local/bin/music-organizer
+```
+
+Needs Python 3.10+ (with `python3-venv` on Debian/Ubuntu). Supports
+**mp3, m4a, flac, ogg, opus** (subfolders included).
 
 ## How it works — drafts first, nothing written until you confirm
 
@@ -47,7 +56,7 @@ Needs Python 3.10+. Supports **mp3, m4a, flac, ogg, opus** (subfolders included)
 6. **`w`** write. A confirmation dialog shows exactly what will change; only
    approved songs are written. You can untick renaming there.
 
-`u` (or `music-organizer --undo FOLDER`) renames files back to their original
+`u` (or `./run.sh --undo FOLDER`) renames files back to their original
 names. Tag changes can't be undone, which is why everything goes through drafts.
 
 ## What gets written
