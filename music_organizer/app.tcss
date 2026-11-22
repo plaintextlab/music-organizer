@@ -1,0 +1,152 @@
+Screen {
+    background: $background;
+}
+
+Header {
+    background: $panel;
+    color: $primary;
+    text-style: bold;
+}
+
+#topbar {
+    height: 1;
+    background: $surface;
+    margin: 0 0 1 0;
+}
+#folder-tag {
+    background: $primary;
+    color: $background;
+    text-style: bold;
+}
+#folder {
+    width: 1fr;
+    padding: 0 1;
+}
+#counts {
+    width: auto;
+}
+
+#main {
+    height: 1fr;
+}
+
+#table {
+    width: 1fr;
+    height: 1fr;
+    border: round $primary 60%;
+    border-title-color: $primary;
+    scrollbar-color: $primary 50%;
+}
+#table:focus {
+    border: round $primary;
+}
+#table > .datatable--cursor {
+    background: $primary 35%;
+    text-style: bold;
+}
+#table > .datatable--header {
+    background: $panel;
+    color: $secondary;
+    text-style: bold;
+}
+
+#side {
+    width: 46;
+    border: round $secondary 60%;
+    padding: 0 1;
+    scrollbar-size-vertical: 1;
+}
+#cover {
+    width: 40;
+    height: auto;
+    margin: 0 0 0 1;
+}
+#cover-info {
+    margin: 0 0 1 0;
+}
+
+#progress-row {
+    height: 1;
+    padding: 0 1;
+}
+#progress {
+    width: auto;
+}
+#progress Bar > .bar--bar {
+    color: $primary;
+}
+#progress-label {
+    color: $secondary;
+}
+
+#log {
+    height: 7;
+    border: round $accent 40%;
+    background: $surface;
+    scrollbar-size-vertical: 1;
+}
+
+Footer {
+    background: $panel;
+}
+
+/* ---------- dialogs ---------- */
+ModalScreen {
+    align: center middle;
+    background: $background 70%;
+}
+.dialog {
+    width: 72;
+    height: auto;
+    max-height: 90%;
+    background: $surface;
+    border: thick $primary;
+    padding: 1 2;
+}
+.dialog.wide {
+    width: 100;
+}
+.dialog-title {
+    text-style: bold;
+    color: $primary;
+    margin: 0 0 1 0;
+}
+.dialog DirectoryTree {
+    height: 18;
+    border: round $secondary 50%;
+    margin: 1 0 0 0;
+}
+.dialog OptionList {
+    height: auto;
+    max-height: 24;
+    border: round $secondary 50%;
+}
+.dialog .hint {
+    color: $text-muted;
+    margin: 1 0 0 0;
+}
+.dialog .body {
+    margin: 0 0 1 0;
+}
+.dialog .preview {
+    margin: 1 0 0 0;
+}
+.buttons {
+    height: auto;
+    margin: 1 0 0 0;
+    align: right middle;
+}
+.buttons Button {
+    margin: 0 0 0 2;
+}
+#form {
+    grid-size: 2;
+    grid-columns: 16 1fr;
+    grid-rows: 3;
+    height: auto;
+}
+.form-label {
+    height: 3;
+    content-align: left middle;
+    color: $secondary;
+}
