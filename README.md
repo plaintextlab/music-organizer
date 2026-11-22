@@ -18,9 +18,12 @@ Nothing to install by hand: just run the launcher.
 ./run.sh ~/Music    # or open a folder directly
 ```
 
-The first run creates a private Python environment in `.venv/` inside this
+The first run creates a private Python environment in `.venvs/` inside this
 folder and installs what it needs (takes a few seconds, only once). It doesn't
-install anything system-wide. Later runs start instantly. To run it from
+install anything system-wide. Later runs start instantly. Each Python version
+gets its own environment, so the same folder works from the host, from a
+distrobox/toolbox container, and after a Python upgrade; a broken environment
+is detected and rebuilt automatically. To run it from
 anywhere, symlink it onto your PATH:
 
 ```bash
@@ -44,8 +47,8 @@ Needs Python 3.10+ (with `python3-venv` on Debian/Ubuntu). Supports
    | key | action |
    |---|---|
    | `e` | edit every field by hand (title, artists, album, year, genre, …) |
-   | `/` | search again with your own text, e.g. `Pehla Nasha - Udit Narayan` |
-   | `c` | pick a different match from the list of results |
+   | `/` | search & pick: shows the query that was used, edit it (e.g. `pehla nasha udit`), Enter searches, then pick any result |
+   | `c` | reopen your last search results to pick a different one |
    | `i` | use an image file from disk as the cover |
    | `g` | generate a new cover (random colours/style each press) |
    | `d` | go back to the downloaded cover |
@@ -58,6 +61,27 @@ Needs Python 3.10+ (with `python3-venv` on Debian/Ubuntu). Supports
 
 `u` (or `./run.sh --undo FOLDER`) renames files back to their original
 names. Tag changes can't be undone, which is why everything goes through drafts.
+
+## Saved drafts
+
+Drafts are saved continuously (each song as soon as its lookup finishes, and
+every edit/approval), including the list of alternative matches, in
+`~/.cache/music-organizer/`. Close the app any time — even mid-fetch — and
+`./run.sh` (no folder needed) reopens your last folder with everything as you
+left it.
+
+## Cover preview
+
+If [ueberzug++](https://github.com/jstkdng/ueberzugpp) (`ueberzugpp`) is
+installed and you're in an X11 or Wayland session, the cover is shown as the
+real image. Otherwise a character-based preview is used. Overrides:
+`MUSIC_ORGANIZER_PREVIEW=blocks` (always use characters),
+`MUSIC_ORGANIZER_UEBERZUG_OUTPUT=sixel` (or `kitty`, `x11`, `wayland`…).
+
+## Colours
+
+The app uses your terminal's own colour palette and background. For a light
+terminal theme: `MUSIC_ORGANIZER_THEME=ansi-light ./run.sh`.
 
 ## What gets written
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from concurrent.futures import ThreadPoolExecutor
 
@@ -104,6 +105,14 @@ def score(c: Candidate, h: Hints) -> float:
         return 0.0
     t = max((max(fuzz.token_sort_ratio(ct, _norm(x)), fuzz.ratio(ct_nb, _nobr(x)))
              for x in h.title_hints), default=0)
+    if not h.artist:
+        # free text like "yellow coldplay": compare the title without the
+        # result's own artist name in it
+        art_words = {w for a in c.artists for w in _norm(a).split()}
+        for x in h.title_hints:
+            rest = " ".join(w for w in _nobr(x).split() if w not in art_words)
+            if rest and rest != _nobr(x):
+                t = max(t, fuzz.token_sort_ratio(ct_nb, rest))
 
     cand_artists = [_norm(a) for a in c.artists if a] or [""]
     a = None
@@ -165,11 +174,12 @@ def _consensus(cands: list[Candidate]) -> None:
         c.score += min(8, 4 * agree) + min(2, same)
 
 
-def _search_round(query: str) -> list[Candidate]:
+def _search_round(query: str, more: bool = False) -> list[Candidate]:
+    n = 25 if more else 10
     jobs = [
-        (providers.saavn_search, (query,)),
-        (providers.itunes_search, (query, "IN")),
-        (providers.itunes_search, (query, "US")),
+        (providers.saavn_search, (query, n)),
+        (providers.itunes_search, (query, "IN", n + 5)),
+        (providers.itunes_search, (query, "US", n + 5)),
     ]
     out: list[Candidate] = []
     with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
@@ -180,6 +190,89 @@ def _search_round(query: str) -> list[Candidate]:
             except Exception:
                 pass
     return out
+
+
+def _rank_versions(cands: list[Candidate], h: "Hints") -> None:
+    """Prefer the right *version* of a song when several artists recorded it.
+
+    Results for the searched song are grouped into versions by shared artists.
+    If the query/tags name an artist, that version wins. Otherwise the version
+    released first (the original) wins over later covers and remakes, and the
+    original's first release (the soundtrack/album) beats later compilations.
+    """
+    wanted = h.title or (h.parts[0] if h.parts else h.stem)
+    qn = _nobr(wanted)
+    qw = set(qn.split())
+    if not qw:
+        return
+    blob = set(h.blob.split())
+
+    def same_song(c: Candidate) -> bool:
+        cn = _nobr(c.title)
+        cw = set(cn.split())
+        return bool(cw) and (cw <= qw or qw <= cw or fuzz.ratio(cn, qn) >= 90)
+
+    song = [c for c in cands if same_song(c)]
+    versions: list[list[Candidate]] = []
+    for c in song:
+        for v in versions:
+            if any(_overlap(c, o) for o in v):
+                v.append(c)
+                break
+        else:
+            versions.append([c])
+
+    def named(v: list[Candidate]) -> bool:
+        # words of the query that aren't part of this version's title
+        title_words = {w for c in v for w in _nobr(c.title).split()}
+        extra = blob - title_words
+        names = {w for c in v for a in c.artists for w in _norm(a).split() if len(w) >= 3}
+        return bool(names & extra)
+
+    # "Yellow (Coldplay)" by someone else = a cover of that artist's song
+    all_names = {w for c in song for a in c.artists for w in _norm(a).split() if len(w) >= 3}
+    for c in song:
+        own = {w for a in c.artists for w in _norm(a).split()}
+        bracket = set(_norm(" ".join(_BRACKET.findall(c.title))).split()) - own
+        if bracket & all_names:
+            c.score -= 20
+
+    mentioned = [v for v in versions if named(v)]
+    if mentioned:
+        for v in versions:
+            bonus = 12 if any(v is m for m in mentioned) else -12
+            for c in v:
+                c.score += bonus
+        return
+    if len(versions) < 2:
+        return
+
+    def first_year(v: list[Candidate]) -> int | None:
+        ys = [int(c.year[:4]) for c in v if c.year[:4].isdigit()]
+        return min(ys) if ys else None
+
+    # a version only counts as "the original" if it shows up more than once:
+    # a lone old track with the same name is usually a different song
+    dated = sorted(((y, v) for v in versions if len(v) >= 2 and (y := first_year(v))),
+                   key=lambda x: x[0])
+    if not dated:
+        return
+    y0, original = dated[0]
+    if len(dated) > 1 and dated[1][0] - y0 < 2:
+        return  # no clearly older version
+    later = [v for v in versions if v is not original]
+    for c in original:
+        c.score += 8 + (2 if c.year[:4] == str(y0) else 0)
+    for v in later:
+        for c in v:
+            c.score -= 4
+
+
+def _rescore(cands: list[Candidate], h: "Hints") -> None:
+    for c in cands:
+        c.score = score(c, h)
+    _consensus(cands)
+    _rank_versions(cands, h)
 
 
 def _dedupe(cands: list[Candidate]) -> list[Candidate]:
@@ -193,52 +286,77 @@ def _dedupe(cands: list[Candidate]) -> list[Candidate]:
 
 
 def pick(cands: list[Candidate]) -> Candidate | None:
-    """Best score wins; the year is the median of the strongly agreeing
-    releases, which shrugs off both re-releases and bad catalogue dates."""
+    """Best score wins. Among near-ties for the same song and artist, prefer the
+    original release: the earliest year that at least two results agree on
+    (so one bad catalogue date can't win, and compilations lose)."""
     if not cands:
         return None
     ranked = sorted(cands, key=lambda c: c.score, reverse=True)
     best = ranked[0]
-    close = [c for c in ranked if best.score - c.score <= 6 and c.year
+    close = [c for c in ranked if best.score - c.score <= 6 and c.year[:4].isdigit()
              and _nobr(c.title) == _nobr(best.title) and _overlap(c, best)]
     if len(close) < 2:
         return best
-    years = sorted(c.year for c in close)
-    year = years[(len(years) - 1) // 2]
-    return max((c for c in close if c.year == year), key=lambda c: c.score)
+    years = sorted(int(c.year[:4]) for c in close)
+    for y in years:
+        if sum(1 for z in years if abs(z - y) <= 1) >= 2:
+            return max((c for c in close if abs(int(c.year[:4]) - y) <= 1),
+                       key=lambda c: (c.score, -int(c.year[:4])))
+    return best
 
 
-def lookup(track: Track, log=lambda *_: None) -> None:
-    """Search every provider and fill track.candidates / chosen / status."""
-    h = Hints(track)
+def search(track: Track, query: str | None = None,
+           log=lambda *_: None) -> tuple[list[Candidate], list[str], "Hints"]:
+    """Search every provider and return (scored results best-first, queries sent, hints).
+
+    With ``query`` the search uses exactly that text (manual search); without
+    it, queries are built from the file's tags and name. Doesn't change the track.
+    """
+    if query:
+        h = Hints(dataclasses.replace(track, custom_query=query))
+        queries = [query] + ([to_english(query)] if not is_latin(query) else [])
+        auto = False
+    else:
+        h = Hints(track)
+        queries = h.queries()[:5]
+        auto = True
+    # only a title to go on: many artists may have recorded it, so look wider
+    wide = not auto or (not h.artist and len(h.parts) < 2)
+
     found: list[Candidate] = []
-    for q in h.queries()[:5]:
+    used: list[str] = []
+    for q in queries:
+        used.append(q)
         try:
-            found.extend(_search_round(q))
+            found.extend(_search_round(q, more=wide))
         except Exception as e:
             log(f"search failed for {q!r}: {e}")
         found = _dedupe(found)
-        for c in found:
-            c.score = score(c, h)
-        _consensus(found)
-        if found and max(c.score for c in found) >= 95:
+        _rescore(found, h)
+        if auto and not wide and found and max(c.score for c in found) >= 95:
             break
 
-    if not found or max(c.score for c in found) < MATCH_THRESHOLD:
+    # MusicBrainz: as a fallback for weak automatic matches, and always for a
+    # manual search so you get as many choices as possible
+    if wide or not found or max(c.score for c in found) < MATCH_THRESHOLD:
         title = h.title or (h.parts[0] if h.parts else h.stem)
         artist = h.artist or (h.parts[1] if len(h.parts) > 1 else "")
         if title:
             try:
                 mb = providers.musicbrainz_search(title, artist)
                 found = _dedupe(found + mb)
-                for c in found:
-                    c.score = score(c, h)
-                _consensus(found)
+                _rescore(found, h)
             except Exception as e:
                 log(f"MusicBrainz failed: {e}")
 
     found.sort(key=lambda c: c.score, reverse=True)
-    track.candidates = found[:25]
+    return found[:40], used, h
+
+
+def lookup(track: Track, log=lambda *_: None) -> None:
+    """Search, then auto-pick the best result and fill the track's draft."""
+    found, track.queries, h = search(track, track.custom_query or None, log)
+    track.candidates = found
     best = pick(found)
 
     if best and best.score >= REVIEW_THRESHOLD:

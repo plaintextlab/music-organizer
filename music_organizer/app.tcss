@@ -1,22 +1,11 @@
-Screen {
-    background: $background;
-}
-
-Header {
-    background: $panel;
-    color: $primary;
-    text-style: bold;
-}
+/* Plain styling that follows the terminal's own colours (ANSI theme). */
 
 #topbar {
     height: 1;
-    background: $surface;
     margin: 0 0 1 0;
 }
 #folder-tag {
-    background: $primary;
-    color: $background;
-    text-style: bold;
+    text-style: bold reverse;
 }
 #folder {
     width: 1fr;
@@ -33,36 +22,36 @@ Header {
 #table {
     width: 1fr;
     height: 1fr;
-    border: round $primary 60%;
-    border-title-color: $primary;
-    scrollbar-color: $primary 50%;
+    border: round ansi_bright_black;
 }
 #table:focus {
     border: round $primary;
 }
-#table > .datatable--cursor {
-    background: $primary 35%;
-    text-style: bold;
-}
-#table > .datatable--header {
-    background: $panel;
-    color: $secondary;
-    text-style: bold;
-}
 
 #side {
     width: 46;
-    border: round $secondary 60%;
+    border: round ansi_bright_black;
     padding: 0 1;
+}
+#side-scroll {
+    height: 1fr;
     scrollbar-size-vertical: 1;
 }
 #cover {
-    width: 40;
+    width: auto;
+    height: auto;
+    margin: 0 0 0 1;
+}
+#cover-img {
+    width: 24;
     height: auto;
     margin: 0 0 0 1;
 }
 #cover-info {
     margin: 0 0 1 0;
+}
+#keys {
+    color: ansi_bright_black;
 }
 
 #progress-row {
@@ -72,57 +61,61 @@ Header {
 #progress {
     width: auto;
 }
-#progress Bar > .bar--bar {
-    color: $primary;
-}
 #progress-label {
     color: $secondary;
 }
 
 #log {
     height: 7;
-    border: round $accent 40%;
-    background: $surface;
+    border: round ansi_bright_black;
     scrollbar-size-vertical: 1;
-}
-
-Footer {
-    background: $panel;
 }
 
 /* ---------- dialogs ---------- */
 ModalScreen {
     align: center middle;
-    background: $background 70%;
 }
 .dialog {
     width: 72;
     height: auto;
     max-height: 90%;
-    background: $surface;
-    border: thick $primary;
+    border: round $primary;
     padding: 1 2;
+    overflow-y: auto;
 }
 .dialog.wide {
     width: 100;
 }
 .dialog-title {
     text-style: bold;
-    color: $primary;
     margin: 0 0 1 0;
 }
 .dialog DirectoryTree {
     height: 18;
-    border: round $secondary 50%;
+    border: round ansi_bright_black;
     margin: 1 0 0 0;
 }
 .dialog OptionList {
     height: auto;
     max-height: 24;
-    border: round $secondary 50%;
+    border: round ansi_bright_black;
+}
+.dialog .hint-top {
+    color: ansi_bright_black;
+    margin: 0 0 1 0;
+}
+#search-dialog DataTable {
+    height: 1fr;
+    min-height: 6;
+    max-height: 100%;
+}
+#search-dialog {
+    height: 90%;
+    width: 120;
+    max-width: 95%;
 }
 .dialog .hint {
-    color: $text-muted;
+    color: ansi_bright_black;
     margin: 1 0 0 0;
 }
 .dialog .body {
@@ -139,14 +132,36 @@ ModalScreen {
 .buttons Button {
     margin: 0 0 0 2;
 }
+
 #form {
     grid-size: 2;
     grid-columns: 16 1fr;
-    grid-rows: 3;
+    grid-rows: 1;
+    grid-gutter: 1 0;
     height: auto;
 }
 .form-label {
-    height: 3;
-    content-align: left middle;
-    color: $secondary;
+    height: 1;
+}
+#form Input {
+    height: 1;
+    border: none;
+    padding: 0 1;
+    background: ansi_default;
+    text-style: underline;
+}
+#form Input:focus {
+    text-style: bold underline;
+    color: $primary;
+}
+
+/* ---------- smaller terminals ---------- */
+Screen.-narrow #side {
+    width: 36;
+}
+Screen.-short #log {
+    height: 5;
+}
+Screen.-short #topbar {
+    margin: 0;
 }

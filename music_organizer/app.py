@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -18,50 +19,61 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.theme import Theme
 from textual.widgets import (Button, Checkbox, DataTable, DirectoryTree, Footer, Header,
-                             Input, Label, OptionList, ProgressBar, RichLog, Static)
-from textual.widgets.option_list import Option
+                             Input, Label, ProgressBar, RichLog, Static)
 
 from . import organizer
-from .drafts import DraftStore
-from .matcher import blank_meta, final_meta, lookup
+from .drafts import DraftStore, last_folder, remember_folder
+from .matcher import blank_meta, final_meta, lookup, search
 from .models import Status, Track
-from .romanize import to_english
+from . import graphics   # must load before the app starts (queries the terminal)
+from .preview import UeberzugPreview
+from .romanize import is_latin, to_english
 from .scanner import filename_parts, read_track, scan
+
+KEY_HELP = Text.assemble(
+    ("\n── keys ─────────────────────────────\n", "dim"),
+    ("space", "bold blue"), (" approve   ", ""), ("a", "bold blue"), (" approve all ◆\n", ""),
+    ("e", "bold blue"), (" edit   ", ""), ("/", "bold blue"), (" search & pick\n", ""),
+    ("c", "bold blue"), (" other results\n", ""),
+    ("i", "bold blue"), (" image file   ", ""), ("g", "bold blue"), (" generate art\n", ""),
+    ("d", "bold blue"), (" web art   ", ""), ("k", "bold blue"), (" keep old art   ", ""),
+    ("v", "bold blue"), (" view\n", ""),
+    ("w", "bold blue"), (" write approved   ", ""), ("u", "bold blue"), (" undo renames\n", ""),
+    ("r", "bold blue"), (" rescan   ", ""), ("o", "bold blue"), (" open folder   ", ""),
+    ("q", "bold blue"), (" quit", ""),
+)
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 
-NEON = Theme(
-    name="music-neon",
-    primary="#ff4fd8",
-    secondary="#00e5ff",
-    accent="#ffd166",
-    foreground="#e9e4ff",
-    background="#0e0a1c",
-    surface="#161029",
-    panel="#20173d",
-    success="#3ddc97",
-    warning="#ffb020",
-    error="#ff5470",
-    dark=True,
-)
-
 STATUS_STYLE = {
     Status.PENDING: ("·  scanned", "dim"),
-    Status.SEARCHING: ("⟳ searching", "bold #00e5ff"),
-    Status.MATCHED: ("◆ draft", "bold #3ddc97"),
-    Status.REVIEW: ("◇ check", "bold #ffb020"),
-    Status.NOT_FOUND: ("✗ no match", "bold #ff5470"),
-    Status.DONE: ("✓ written", "bold #8a7dff"),
-    Status.ERROR: ("! error", "bold #ff5470"),
+    Status.SEARCHING: ("⟳ searching", "bold cyan"),
+    Status.MATCHED: ("◆ draft", "bold green"),
+    Status.REVIEW: ("◇ check", "bold yellow"),
+    Status.NOT_FOUND: ("✗ no match", "bold red"),
+    Status.DONE: ("✓ written", "bold blue"),
+    Status.ERROR: ("! error", "bold red"),
 }
-ART_STYLE = {"online": ("web", "#00e5ff"), "existing": ("kept", "#b8b0d8"),
-             "generated": ("gen", "#ff4fd8"), "file": ("file", "#ffd166"), "": ("—", "dim")}
+ART_STYLE = {"online": ("web", "cyan"), "existing": ("kept", "default"),
+             "generated": ("gen", "blue"), "file": ("file", "yellow"), "": ("—", "dim")}
 
 FIELDS = [("title", "Title"), ("artist", "Artist(s)"), ("album", "Album / Movie"),
           ("albumartist", "Album artist"), ("year", "Year"), ("genre", "Genre"),
           ("composer", "Composer"), ("label", "Label")]
+
+
+def shown(name: str) -> str:
+    """File name safe to draw in a terminal table.
+
+    Terminals disagree on how wide Bengali/Devanagari text is, which shoves
+    columns and borders out of line, so such names are shown transliterated
+    (marked with ≈). The real file name is never changed by this.
+    """
+    if is_latin(name):
+        return name
+    p = Path(name)
+    return f"≈ {to_english(p.stem)}{p.suffix}"
 
 
 def halfblock(data: bytes, width: int = 40) -> Text:
@@ -174,7 +186,7 @@ class EditScreen(_Modal):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog wide"):
-            yield Label(f"Edit draft · {self.track.path.name}", classes="dialog-title")
+            yield Label(f"Edit draft · {shown(self.track.path.name)}", classes="dialog-title")
             with Grid(id="form"):
                 for key, label in FIELDS:
                     yield Label(label, classes="form-label")
@@ -203,7 +215,7 @@ class EditScreen(_Modal):
         m = self._values()
         name = organizer.new_filename(m, self.track.ext) if m["title"] else "(needs a title)"
         self.query_one("#preview", Static).update(Text.assemble(("New file name  ", "dim"),
-                                                                (name, "bold #ffd166")))
+                                                                (name, "bold yellow")))
 
     @on(Input.Submitted)
     @on(Button.Pressed, "#ok")
@@ -222,61 +234,130 @@ class EditScreen(_Modal):
         self.dismiss(None)
 
 
-class SearchScreen(_Modal):
-    def __init__(self, track: Track, guess: str):
-        super().__init__()
-        self.track, self.guess = track, guess
-
-    def compose(self) -> ComposeResult:
-        with Vertical(classes="dialog"):
-            yield Label("Search online", classes="dialog-title")
-            yield Static(f"{self.track.path.name}", classes="hint")
-            yield Input(self.guess, id="q", placeholder="song name - artist")
-            yield Static("Tip: 'Song - Artist' or 'Song Movie' works best.", classes="hint")
-            with Horizontal(classes="buttons"):
-                yield Button("Search", variant="primary", id="ok")
-                yield Button("Cancel", id="cancel")
-
-    @on(Input.Submitted)
-    @on(Button.Pressed, "#ok")
-    def _ok(self) -> None:
-        q = self.query_one("#q", Input).value.strip()
-        self.dismiss(q or None)
-
-    @on(Button.Pressed, "#cancel")
-    def _cancel(self) -> None:
-        self.dismiss(None)
+def _mmss(sec: float | None) -> str:
+    return f"{int(sec) // 60}:{int(sec) % 60:02d}" if sec else "-:--"
 
 
-class CandidatesScreen(_Modal):
-    def __init__(self, track: Track):
+class SearchPickScreen(_Modal):
+    """Type any search, see every result, pick the right one yourself."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel"),
+                Binding("down", "to_results", show=False, priority=False)]
+
+    def __init__(self, track: Track, start_in_results: bool = False):
         super().__init__()
         self.track = track
+        self.results = list(track.candidates)
+        self.used = list(track.queries)
+        self.start_in_results = start_in_results and bool(self.results)
+        if track.custom_query:
+            self.query_text = track.custom_query
+        elif track.queries:
+            self.query_text = track.queries[0]
+        elif track.meta:
+            self.query_text = f"{track.meta['title']} {track.meta['artist']}".strip()
+        else:
+            self.query_text = filename_parts(track.path)[0].replace(" - ", " ")
 
     def compose(self) -> ComposeResult:
-        with Vertical(classes="dialog wide"):
-            yield Label("Pick the right match", classes="dialog-title")
-            opts = []
-            for i, c in enumerate(self.track.candidates):
-                m = final_meta(c)
-                line = Text.assemble(
-                    (f"{min(100, c.score):3.0f}% ", "bold #3ddc97" if c.score >= 75 else "#ffb020"),
-                    (f"{c.source:<11} ", "dim"),
-                    (m["title"], "bold"), ("  ·  ", "dim"), (m["artist"], "#00e5ff"),
-                    ("  ·  ", "dim"), (m["album"] or "—", ""), (f"  ({m['year'] or '?'})", "#ffd166"),
-                )
-                opts.append(Option(line, id=str(i)))
-            yield OptionList(*opts, id="cands")
-            with Horizontal(classes="buttons"):
-                yield Button("Cancel", id="cancel")
+        with Vertical(classes="dialog wide", id="search-dialog"):
+            yield Label(f"Search & pick · {shown(self.track.path.name)}", classes="dialog-title")
+            yield Static(id="used", classes="hint-top")
+            yield Input(self.query_text, id="q", placeholder="song name, artist, movie…")
+            yield Static(id="status", classes="hint")
+            yield DataTable(id="results", cursor_type="row", zebra_stripes=True)
+            yield Static("Enter in the box searches · ↓ / Tab moves to the results · "
+                         "Enter on a result uses it · Esc cancels", classes="hint")
 
-    @on(OptionList.OptionSelected)
-    def _picked(self, ev: OptionList.OptionSelected) -> None:
-        self.dismiss(int(ev.option.id))
+    def on_mount(self) -> None:
+        self._show_used()
+        self.call_after_refresh(self._fill, self.results)
+        if self.start_in_results:
+            self.query_one("#results", DataTable).focus()
+        else:
+            self.query_one("#q", Input).focus()
 
-    @on(Button.Pressed, "#cancel")
-    def _cancel(self) -> None:
-        self.dismiss(None)
+    def _show_used(self) -> None:
+        if self.used:
+            qs = ", ".join(f"“{q}”" for q in self.used)
+            txt = Text.assemble(("Last search used: ", "dim"), (qs, "bold"))
+        else:
+            txt = Text("Not searched yet — press Enter to search.", "dim")
+        self.query_one("#used", Static).update(txt)
+
+    def _fill(self, results) -> None:
+        tbl = self.query_one("#results", DataTable)
+        tbl.clear(columns=True)
+        # one line per result; long names are cut to fit the dialog
+        w = max(60, self.query_one("#search-dialog").content_region.width or 110)
+        # marker, %, source, year, length + 1 cell padding each side of 8 columns + scrollbar
+        fixed = 2 + 5 + 7 + 5 + 6 + 8 * 2 + 3
+        flex = max(30, w - fixed)
+        cols = [("", 2), ("Match", 5), ("Source", 7), ("Title", flex * 30 // 100),
+                ("Artist", flex * 30 // 100), ("Album / Movie", flex - 2 * (flex * 30 // 100)),
+                ("Year", 5), ("Length", 6)]
+        for label, width in cols:
+            tbl.add_column(label, width=width)
+        chosen, file_len = self.track.chosen, self.track.duration
+        src = {"jiosaavn": "saavn", "itunes": "itunes", "musicbrainz": "mbrainz"}
+        for i, c in enumerate(results):
+            m = final_meta(c)
+            sc = min(100, c.score)
+            same_len = bool(c.duration and file_len and abs(c.duration - file_len) <= 3)
+            tbl.add_row(
+                Text("●", "green") if c is chosen else "",
+                Text(f"{sc:3.0f}%", "bold green" if sc >= 75 else "yellow" if sc >= 45 else "red"),
+                Text(src.get(c.source, c.source), "dim"),
+                Text(m["title"] or "?", "bold"),
+                Text(m["artist"] or "?", "cyan"),
+                m["album"] or "—",
+                Text(m["year"] or "----", "yellow"),
+                Text(_mmss(c.duration), "green" if same_len else "dim"),
+                key=str(i),
+            )
+        status = self.query_one("#status", Static)
+        if results:
+            note = f"  ·  this song is {_mmss(file_len)}; matching lengths are green" if file_len else ""
+            status.update(Text(f"{len(results)} results{note}", "dim"))
+        else:
+            status.update(Text("No results yet." if not self.used else
+                               "Nothing found — try fewer words, or the movie/album name.", "dim"))
+
+    def action_to_results(self) -> None:
+        if self.query_one("#q", Input).has_focus and self.results:
+            self.query_one("#results", DataTable).focus()
+
+    @on(Input.Submitted, "#q")
+    def _search(self) -> None:
+        q = self.query_one("#q", Input).value.strip()
+        if not q:
+            return
+        self.query_one("#status", Static).update(Text(f"Searching for “{q}” …", "bold"))
+        self.query_one("#results", DataTable).clear()
+        self._run_search(q)
+
+    @work(thread=True, exclusive=True)
+    def _run_search(self, q: str) -> None:
+        try:
+            results, used, _ = search(self.track, q)
+        except Exception as e:
+            self.app.call_from_thread(self.query_one("#status", Static).update,
+                                      Text(f"Search failed: {e}", "red"))
+            return
+        self.app.call_from_thread(self._got, q, results, used)
+
+    def _got(self, q: str, results, used) -> None:
+        self.results, self.used, self.query_text = results, used, q
+        self._show_used()
+        self._fill(results)
+        if results:
+            self.query_one("#results", DataTable).focus()
+
+    @on(DataTable.RowSelected, "#results")
+    def _picked(self, ev: DataTable.RowSelected) -> None:
+        c = self.results[int(ev.row_key.value)]
+        self.dismiss({"candidate": c, "results": self.results, "used": self.used,
+                      "query": self.query_text})
 
 
 class ConfirmScreen(_Modal):
@@ -317,17 +398,17 @@ class MusicOrganizer(App):
 
     BINDINGS = [
         Binding("o", "open_folder", "Open"),
-        Binding("f", "fetch", "Fetch drafts"),
+        Binding("f", "fetch", "Fetch"),
         Binding("space", "approve", "Approve"),
-        Binding("a", "approve_matched", "Approve all ◆"),
+        Binding("a", "approve_matched", "All ◆"),
         Binding("e", "edit", "Edit"),
-        Binding("slash", "search", "Search"),
-        Binding("c", "candidates", "Matches"),
-        Binding("i", "cover_file", "Art: file"),
-        Binding("g", "cover_generate", "Art: generate"),
-        Binding("d", "cover_download", "Art: web"),
+        Binding("slash", "search", "Search & pick"),
+        Binding("c", "candidates", "Other results", show=False),
+        Binding("i", "cover_file", "Img file"),
+        Binding("g", "cover_generate", "Gen art"),
+        Binding("d", "cover_download", "Web art", show=False),
         Binding("k", "cover_keep", "Art: keep old", show=False),
-        Binding("v", "cover_view", "View art"),
+        Binding("v", "cover_view", "View art", show=False),
         Binding("w", "write", "WRITE"),
         Binding("u", "undo", "Undo renames", show=False),
         Binding("r", "rescan", "Rescan", show=False),
@@ -340,6 +421,8 @@ class MusicOrganizer(App):
         self.tracks: list[Track] = []
         self.store: DraftStore | None = None
         self.busy = False
+        self.preview: UeberzugPreview | None = None
+        self.cover_mode = ""
 
     # ------------------------------------------------------------- layout
     def compose(self) -> ComposeResult:
@@ -350,30 +433,50 @@ class MusicOrganizer(App):
             yield Static("", id="counts")
         with Horizontal(id="main"):
             yield DataTable(id="table", cursor_type="row", zebra_stripes=True)
-            with VerticalScroll(id="side"):
+            with Vertical(id="side"):
+                # the cover sits outside the scroll area so ueberzug++ can
+                # place the real image at a fixed spot
                 yield Static(id="cover")
+                if graphics.ImageWidget is not None:
+                    yield graphics.ImageWidget(id="cover-img")
                 yield Static(id="cover-info")
-                yield Static(id="details")
+                with VerticalScroll(id="side-scroll"):
+                    yield Static(id="details")
+                    yield Static(KEY_HELP, id="keys")
         with Horizontal(id="progress-row"):
             yield ProgressBar(id="progress", show_eta=False)
             yield Static("", id="progress-label")
         yield RichLog(id="log", markup=True, wrap=True, max_lines=500)
-        yield Footer()
+        yield Footer(compact=True, show_command_palette=False)
 
     def on_mount(self) -> None:
-        self.register_theme(NEON)
-        self.theme = "music-neon"
+        # Use the terminal's own palette and background. Light terminals:
+        # MUSIC_ORGANIZER_THEME=ansi-light (any Textual theme name works).
+        self.theme = os.environ.get("MUSIC_ORGANIZER_THEME", "ansi-dark")
+        # Sharpest available cover preview: terminal graphics (kitty/sixel),
+        # then ueberzug++, then coloured block characters.
+        if graphics.ImageWidget is not None:
+            self.cover_mode = graphics.MODE
+        else:
+            self.preview = UeberzugPreview.start()
+            self.cover_mode = "ueberzug++" if self.preview else ""
+        if self.preview:
+            self.set_interval(0.25, self._sync_preview)
         t = self.query_one(DataTable)
-        t.add_column("✓", key="ok", width=2)
-        t.add_column("State", key="state", width=12)
-        t.add_column("Current file", key="file")
-        t.add_column("→ Draft file name", key="new")
-        t.add_column("Art", key="art", width=5)
+        self._add_columns()
         self.query_one("#progress-row").display = False
-        self.log_line("[b #ff4fd8]Welcome![/] Workflow: [b]o[/] open folder → [b]f[/] fetch drafts → "
+        self.log_line("[b blue]Welcome![/] Workflow: [b]o[/] open folder → [b]f[/] fetch drafts → "
                       "review / [b]e[/] edit / cover keys → [b]space[/] approve → [b]w[/] write.")
         self.log_line("[dim]Drafts are kept in ~/.cache/music-organizer — your songs are not touched "
                       "until you press w and confirm.[/]")
+        if self.cover_mode:
+            self.log_line(f"[dim]Cover preview: {self.cover_mode}.[/]")
+        else:
+            self.log_line("[dim]Cover preview: block characters (this terminal has no image "
+                          "support; use kitty/foot/wezterm or install ueberzugpp for sharp covers).[/]")
+        if not self.folder and (prev := last_folder()):
+            self.folder = prev
+            self.log_line(f"Reopening your last folder — press [b]o[/] to choose another.")
         if self.folder:
             self.load_folder(self.folder)
         else:
@@ -392,16 +495,59 @@ class MusicOrganizer(App):
 
     def _row(self, tr: Track) -> list:
         label, style = STATUS_STYLE[tr.status]
-        ok = Text("●", "bold #3ddc97") if tr.approved else Text("○", "dim")
+        ok = Text("●", "bold green") if tr.approved else Text("○", "dim")
         new = organizer.target_path(tr)
         if new is None:
             new_txt = Text("—", "dim")
         elif new.name == tr.path.name:
             new_txt = Text(new.name + "  (same)", "dim")
         else:
-            new_txt = Text(new.name, "#ffd166" if tr.edited else "")
+            new_txt = Text(new.name, "yellow" if tr.edited else "")
         art, art_style = ART_STYLE.get(tr.cover_source, ART_STYLE[""])
-        return [ok, Text(label, style), Text(tr.path.name, "#b8b0d8"), new_txt, Text(art, art_style)]
+        return [ok, Text(label, style), Text(shown(tr.path.name), "default"), new_txt, Text(art, art_style)]
+
+    # ------------------------------------------------------- responsive
+    def _cover_px(self) -> int:
+        w, h = self.size
+        px = 40 if h >= 48 else 32 if h >= 40 else 24
+        return min(px, 30) if w < 150 else px
+
+    def on_resize(self, _ev=None) -> None:
+        w, h = self.size
+        self.screen.set_class(w < 150, "-narrow")
+        self.screen.set_class(h < 40, "-short")
+        self.call_after_refresh(self._fit_columns)
+        self.call_after_refresh(lambda: self.show_details(self.current()))
+
+    def _fit_columns(self) -> None:
+        """Share the table's width between the two file-name columns.
+
+        Columns are rebuilt (not resized in place) so no row keeps a stale
+        layout from the old width.
+        """
+        t = self.query_one(DataTable)
+        avail = t.scrollable_content_region.width - (2 + 12 + 5) - 2 * 5 - 1
+        avail = max(avail, 30)
+        fw = avail * 2 // 5
+        widths = (fw, avail - fw)
+        if widths == getattr(self, "_col_widths", None):
+            return
+        self._col_widths = widths
+        row = t.cursor_row
+        t.clear(columns=True)
+        self._add_columns(*widths)
+        for i, tr in enumerate(self.tracks):
+            t.add_row(*self._row(tr), key=str(i))
+        if self.tracks:
+            t.move_cursor(row=min(row, len(self.tracks) - 1))
+
+    def _add_columns(self, file_w: int = 30, new_w: int = 40) -> None:
+        t = self.query_one(DataTable)
+        t.add_column("✓", key="ok", width=2)
+        t.add_column("State", key="state", width=12)
+        t.add_column("Current file", key="file", width=file_w)
+        t.add_column("→ Draft file name", key="new", width=new_w)
+        t.add_column("Art", key="art", width=5)
 
     def refresh_track(self, tr: Track) -> None:
         try:
@@ -410,7 +556,7 @@ class MusicOrganizer(App):
             return
         t = self.query_one(DataTable)
         for col, val in zip(("ok", "state", "file", "new", "art"), self._row(tr)):
-            t.update_cell(str(i), col, val, update_width=col in ("file", "new"))
+            t.update_cell(str(i), col, val)
         if tr is self.current():
             self.show_details(tr)
         self.update_counts()
@@ -420,23 +566,42 @@ class MusicOrganizer(App):
         by = lambda s: sum(1 for t in self.tracks if t.status == s)
         appr = sum(1 for t in self.tracks if t.approved)
         self.query_one("#counts", Static).update(Text.assemble(
-            (f" {n} songs ", "bold"), (f" ◆ {by(Status.MATCHED)} ", "#3ddc97"),
-            (f" ◇ {by(Status.REVIEW)} ", "#ffb020"), (f" ✗ {by(Status.NOT_FOUND)} ", "#ff5470"),
-            (f" ● {appr} approved ", "bold #3ddc97"), (f" ✓ {by(Status.DONE)} written ", "#8a7dff"),
+            (f" {n} songs ", "bold"), (f" ◆ {by(Status.MATCHED)} ", "green"),
+            (f" ◇ {by(Status.REVIEW)} ", "yellow"), (f" ✗ {by(Status.NOT_FOUND)} ", "red"),
+            (f" ● {appr} approved ", "bold green"), (f" ✓ {by(Status.DONE)} written ", "blue"),
         ))
 
     def show_details(self, tr: Track | None) -> None:
         cover = self.query_one("#cover", Static)
         info = self.query_one("#cover-info", Static)
         details = self.query_one("#details", Static)
+        img = self.query("#cover-img").first() if graphics.ImageWidget is not None else None
+        if img is not None:
+            show_img = bool(tr and tr.cover)
+            img.display = show_img
+            cover.display = not show_img
         if tr is None:
             cover.update("")
             info.update("")
             details.update("")
             return
-        if tr.cover:
+        if img is not None and tr.cover:
+            px = self._cover_px()
             try:
-                cover.update(halfblock(tr.cover))
+                img.image = Image.open(io.BytesIO(tr.cover))
+                img.styles.width = px
+                # height follows the image's real proportions and the
+                # terminal's real cell size, so square covers stay square
+                img.styles.height = "auto"
+            except Exception:
+                img.display, cover.display = False, True
+                cover.update(Text("(cover can't be previewed)", "dim"))
+        elif tr.cover and self.preview:
+            px = self._cover_px()   # reserve a square box; ueberzug++ draws into it
+            cover.update(Text("\n".join([" " * px] * (px // 2))))
+        elif tr.cover:
+            try:
+                cover.update(halfblock(tr.cover, self._cover_px()))
             except Exception:
                 cover.update(Text("(cover can't be previewed)", "dim"))
         else:
@@ -444,7 +609,8 @@ class MusicOrganizer(App):
         art = {"online": "downloaded", "existing": "already in the file", "generated": "generated",
                "file": "from your image file", "": "none"}[tr.cover_source]
         info.update(Text.assemble(("Cover: ", "dim"), (art, "bold"),
-                                  ("   v opens it full size", "dim") if tr.cover else ""))
+                                  ("   v view", "dim") if tr.cover else ""))
+        self.call_after_refresh(self._sync_preview)
 
         tbl = Table.grid(padding=(0, 1))
         tbl.add_column(style="dim", no_wrap=True)
@@ -455,20 +621,20 @@ class MusicOrganizer(App):
             new = str(m.get(key, "") or "")
             old = cur.get(key, "")
             if not m:
-                tbl.add_row(label, Text(old or "—", "#b8b0d8"))
+                tbl.add_row(label, Text(old or "—", "default"))
             elif old and old != new and key in cur:
-                tbl.add_row(label, Text.assemble((new or "—", "bold #3ddc97"), ("\n  was: ", "dim"),
+                tbl.add_row(label, Text.assemble((new or "—", "bold green"), ("\n  was: ", "dim"),
                                                  (old, "dim strike")))
             else:
                 tbl.add_row(label, Text(new or "—", "bold" if new else "dim"))
         label, style = STATUS_STYLE[tr.status]
         head = Text.assemble((label, style), ("   ", ""),
                              ("APPROVED" if tr.approved else "not approved",
-                              "bold #3ddc97" if tr.approved else "dim"),
-                             ("  · edited by you" if tr.edited else "", "#ffd166"))
+                              "bold green" if tr.approved else "dim"),
+                             ("  · edited by you" if tr.edited else "", "yellow"))
         new = organizer.target_path(tr)
-        foot = Text.assemble(("\nfile  ", "dim"), (tr.path.name, "#b8b0d8"),
-                             ("\nnew   ", "dim"), (new.name if new else "—", "bold #ffd166"),
+        foot = Text.assemble(("\nfile  ", "dim"), (shown(tr.path.name), "default"),
+                             ("\nnew   ", "dim"), (new.name if new else "—", "bold yellow"),
                              ("\n\n" + tr.message, "dim italic") if tr.message else "")
         from rich.console import Group
         details.update(Group(head, Text(""), tbl, foot))
@@ -477,12 +643,20 @@ class MusicOrganizer(App):
     def _highlight(self, _ev) -> None:
         self.show_details(self.current())
 
+    def save_drafts_soon(self) -> None:
+        """Save during long jobs, at most every 2 seconds."""
+        import time
+        now = time.monotonic()
+        if now - getattr(self, "_last_save", 0.0) >= 2.0:
+            self._last_save = now
+            self.save_drafts()
+
     def save_drafts(self) -> None:
         if self.store:
             try:
                 self.store.save(self.tracks)
             except OSError as e:
-                self.log_line(f"[#ff5470]could not save drafts: {e}[/]")
+                self.log_line(f"[red]could not save drafts: {e}[/]")
 
     def _guard(self) -> bool:
         if self.busy:
@@ -507,7 +681,8 @@ class MusicOrganizer(App):
     def load_folder(self, folder: Path) -> None:
         self.folder = folder.expanduser().resolve()
         self.store = DraftStore(self.folder)
-        self.query_one("#folder", Static).update(Text(str(self.folder), "bold #00e5ff"))
+        remember_folder(self.folder)
+        self.query_one("#folder", Static).update(Text(str(self.folder), "bold"))
         self.scan_worker(self.folder)
 
     @work(thread=True, exclusive=True, group="scan")
@@ -549,7 +724,7 @@ class MusicOrganizer(App):
             tr = self.current()
             if tr and tr.status != Status.DONE:
                 todo = [tr]
-                self.log_line(f"Re-fetching [b]{tr.path.name}[/]")
+                self.log_line(f"Re-fetching [b]{shown(tr.path.name)}[/]")
         if not todo:
             self.notify("Nothing to fetch")
             return
@@ -571,6 +746,7 @@ class MusicOrganizer(App):
                 tr.status, tr.message = Status.ERROR, f"lookup failed: {e}"
             self.call_from_thread(self.refresh_track, tr)
             self.call_from_thread(self._progress_step)
+            self.save_drafts_soon()   # don't lose finished drafts if the app closes mid-fetch
 
         try:
             with ThreadPoolExecutor(max_workers=4) as ex:
@@ -584,8 +760,8 @@ class MusicOrganizer(App):
             n = sum(1 for t in todo if t.status == Status.NOT_FOUND)
             self.call_from_thread(
                 self.log_line,
-                f"Drafts ready: [#3ddc97]{m} confident[/], [#ffb020]{r} to check[/], "
-                f"[#ff5470]{n} not found[/]. Nothing has been written yet — review, approve "
+                f"Drafts ready: [green]{m} confident[/], [yellow]{r} to check[/], "
+                f"[red]{n} not found[/]. Nothing has been written yet — review, approve "
                 f"([b]space[/] / [b]a[/]) and press [b]w[/].")
 
     def _progress_start(self, total: int, label: str) -> None:
@@ -652,41 +828,33 @@ class MusicOrganizer(App):
 
         self.push_screen(EditScreen(tr), done)
 
-    def action_search(self) -> None:
+    def action_search(self, start_in_results: bool = False) -> None:
         tr = self.current()
         if not tr or not self._guard():
             return
-        guess = tr.custom_query or (f"{tr.meta['title']} - {tr.meta['artist']}" if tr.meta
-                                    else filename_parts(tr.path)[0])
 
-        def done(q: str | None) -> None:
-            if q:
-                tr.custom_query = q
-                self.log_line(f"Searching for [b]{q}[/] …")
-                self.fetch_worker([tr])
-
-        self.push_screen(SearchScreen(tr, guess), done)
-
-    def action_candidates(self) -> None:
-        tr = self.current()
-        if not tr or not self._guard():
-            return
-        if not tr.candidates:
-            self.notify("No matches loaded for this song — press / to search", severity="warning")
-            return
-
-        def done(i: int | None) -> None:
-            if i is None:
+        def done(res: dict | None) -> None:
+            if not res:
                 return
-            c = tr.candidates[i]
+            c = res["candidate"]
+            tr.custom_query = res["query"]
+            tr.queries = res["used"]
+            tr.candidates = res["results"]
             tr.chosen = c
             tr.meta = final_meta(c)
             tr.edited = False
+            tr.approved = False
             tr.status = Status.MATCHED if c.score >= 75 else Status.REVIEW
             tr.message = f"picked by you · {c.source}"
+            self.refresh_track(tr)
+            self.log_line(f"Picked [b]{tr.meta['title']}[/] — {tr.meta['artist']} "
+                          f"({tr.meta['year'] or '?'}) · getting its cover…")
             self.cover_worker(tr, "download")
 
-        self.push_screen(CandidatesScreen(tr), done)
+        self.push_screen(SearchPickScreen(tr, start_in_results), done)
+
+    def action_candidates(self) -> None:
+        self.action_search(start_in_results=True)
 
     # -------------------------------------------------------------- cover
     @work(thread=True, group="cover")
@@ -792,18 +960,19 @@ class MusicOrganizer(App):
         ok = 0
         try:
             for tr in todo:
-                old = tr.path.name
+                old = shown(tr.path.name)
                 try:
                     organizer.write(tr, rename=rename)
                     ok += 1
                     tr.cur_title, tr.cur_artist = tr.meta["title"], tr.meta["artist"]
                     tr.cur_album, tr.cur_year = tr.meta.get("album", ""), tr.meta.get("year", "")
-                    self.call_from_thread(self.log_line, f"[#3ddc97]✓[/] {old}  →  [b]{tr.path.name}[/]")
+                    self.call_from_thread(self.log_line, f"[green]✓[/] {old}  →  [b]{tr.path.name}[/]")
                 except Exception as e:
                     tr.status, tr.message = Status.ERROR, f"write failed: {e}"
-                    self.call_from_thread(self.log_line, f"[#ff5470]✗ {old}: {e}[/]")
+                    self.call_from_thread(self.log_line, f"[red]✗ {old}: {e}[/]")
                 self.call_from_thread(self.refresh_track, tr)
                 self.call_from_thread(self._progress_step)
+                self.save_drafts_soon()
         finally:
             self.busy = False
             self.save_drafts()
@@ -826,6 +995,38 @@ class MusicOrganizer(App):
                                        "to its original name. Tags are not changed.", "Undo renames"),
                          done)
 
+    # ------------------------------------------------------ cover preview
+    def _sync_preview(self) -> None:
+        """Keep the ueberzug++ image matching what's on screen right now."""
+        p = self.preview
+        if not p:
+            return
+        if not p.alive:
+            self.preview = None
+            self.log_line("[dim]ueberzug++ stopped - using the built-in preview.[/]")
+            self.show_details(self.current())
+            return
+        tr = self.current()
+        if len(self.screen_stack) > 1 or tr is None or not tr.cover:
+            p.hide()     # a dialog is open, or nothing to show
+            return
+        r = self.query_one("#cover", Static).content_region
+        if r.width < 4 or r.height < 2:
+            p.hide()
+            return
+        if not p.show(tr.cover, r.x, r.y, r.width, r.height):
+            p.hide()
+
+    def _stop_preview(self) -> None:
+        if self.preview:
+            self.preview.close()
+            self.preview = None
+
+    def on_unmount(self) -> None:
+        self.save_drafts()   # however the app ends (q, ctrl+q, closed terminal…)
+        self._stop_preview()
+
     async def action_quit(self) -> None:
         self.save_drafts()
+        self._stop_preview()
         self.exit()

@@ -50,6 +50,7 @@ class Track:
     has_art: bool = False
     # lookup state
     custom_query: str = ""
+    queries: list[str] = field(default_factory=list)   # what the last search sent
     candidates: list[Candidate] = field(default_factory=list)
     chosen: Candidate | None = None
     status: Status = Status.PENDING
